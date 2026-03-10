@@ -20,6 +20,7 @@ interface AppContextType {
   createFamily: (familyName: string, user: User) => Promise<string>;
   joinFamily: (inviteCode: string, user: User) => Promise<void>;
   inviteMember: () => Promise<string>;
+  regenerateInviteCode: () => Promise<string>;
 
   // Combined state
   isLoading: boolean;
@@ -56,6 +57,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     createFamily: family.createFamily,
     joinFamily: family.joinFamily,
     inviteMember: family.inviteMember as () => Promise<string>,
+    regenerateInviteCode: family.regenerateInviteCode,
 
     // Combined
     isLoading,

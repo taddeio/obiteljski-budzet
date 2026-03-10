@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import {
   doc,
-  getDoc,
   setDoc,
   collection,
   onSnapshot,
   updateDoc,
+  query,
+  where,
+  getDocs,
   serverTimestamp,
 } from "firebase/firestore";
 import { db } from "../firebase";
@@ -19,6 +21,7 @@ export interface UseFamilyReturn {
   createFamily: (familyName: string, user: User) => Promise<string>;
   joinFamily: (inviteCode: string, user: User) => Promise<void>;
   inviteMember: (email: string) => Promise<string>;
+  regenerateInviteCode: () => Promise<string>;
 }
 
 // Generate a random invite code
@@ -43,9 +46,17 @@ export const useFamily = (userId: string | null, familyId: string | null): UseFa
     const familyRef = doc(db, "families", familyId);
     const unsubscribe = onSnapshot(
       familyRef,
-      (doc) => {
-        if (doc.exists()) {
-          const familyData = doc.data() as Family;
+      async (snap) => {
+        if (snap.exists()) {
+          const familyData = snap.data() as Family;
+
+          // Auto-fix: generate invite code if missing
+          if (!familyData.inviteCode) {
+            const newCode = generateInviteCode();
+            await updateDoc(familyRef, { inviteCode: newCode }).catch(() => {});
+            familyData.inviteCode = newCode;
+          }
+
           setFamily(familyData);
           setMembers(Object.values(familyData.members || {}));
         } else {
@@ -64,6 +75,8 @@ export const useFamily = (userId: string | null, familyId: string | null): UseFa
   }, [familyId, userId]);
 
   const createFamily = async (familyName: string, user: User): Promise<string> => {
+    if (!user?.id) throw new Error("Korisnik nije prijavljen.");
+
     try {
       const newFamilyId = doc(collection(db, "families")).id;
       const inviteCode = generateInviteCode();
@@ -71,8 +84,8 @@ export const useFamily = (userId: string | null, familyId: string | null): UseFa
       const newMember: FamilyMember = {
         id: user.id,
         userId: user.id,
-        email: user.email,
-        displayName: user.displayName,
+        email: user.email || "",
+        displayName: user.displayName || user.email || "Vlasnik",
         role: "owner",
         color: MEMBER_COLORS[0],
         joinedAt: Date.now(),
@@ -90,7 +103,6 @@ export const useFamily = (userId: string | null, familyId: string | null): UseFa
         updatedAt: Date.now(),
       };
 
-      // Create family document
       await setDoc(doc(db, "families", newFamilyId), newFamily);
 
       // Update user document with family ID
@@ -109,35 +121,44 @@ export const useFamily = (userId: string | null, familyId: string | null): UseFa
   };
 
   const joinFamily = async (inviteCode: string, user: User): Promise<void> => {
+    if (!user?.id) throw new Error("Korisnik nije prijavljen.");
+
     try {
-      // Find family by invite code (use as document ID)
-      const familySnap = await getDoc(doc(db, "families", inviteCode));
-      if (!familySnap.exists()) {
+      // Query family by invite code field
+      const q = query(
+        collection(db, "families"),
+        where("inviteCode", "==", inviteCode.toUpperCase())
+      );
+      const querySnap = await getDocs(q);
+
+      if (querySnap.empty) {
         throw new Error("Kôd za pozivnicu nije validan.");
       }
 
-      const targetFamily = familySnap.data() as Family;
-      const targetFamilyId = inviteCode;
+      const familyDoc = querySnap.docs[0];
+      const targetFamily = familyDoc.data() as Family;
+      const targetFamilyId = familyDoc.id;
 
-      if (!targetFamily) {
-        throw new Error("Obitelj nije pronađena.");
+      // Check not already a member
+      if (targetFamily.members?.[user.id]) {
+        throw new Error("Već ste član ove obitelji.");
       }
 
-      // Create new member
-      const memberColor = MEMBER_COLORS[Object.keys(targetFamily.members).length % MEMBER_COLORS.length];
+      const memberColor =
+        MEMBER_COLORS[Object.keys(targetFamily.members || {}).length % MEMBER_COLORS.length];
+
       const newMember: FamilyMember = {
         id: user.id,
         userId: user.id,
-        email: user.email,
-        displayName: user.displayName,
+        email: user.email || "",
+        displayName: user.displayName || user.email || "Član",
         role: "member",
         color: memberColor,
         joinedAt: Date.now(),
       };
 
       // Add member to family
-      const familyRef = doc(db, "families", targetFamilyId);
-      await updateDoc(familyRef, {
+      await updateDoc(doc(db, "families", targetFamilyId), {
         [`members.${user.id}`]: newMember,
         updatedAt: serverTimestamp(),
       });
@@ -156,17 +177,19 @@ export const useFamily = (userId: string | null, familyId: string | null): UseFa
   };
 
   const inviteMember = async (): Promise<string> => {
-    if (!family) {
-      throw new Error("Obitelj nije učitana.");
-    }
-
-    if (family.ownerId !== userId) {
-      throw new Error("Samo vlasnik obitelji može pozvati nove članove.");
-    }
-
-    // For MVP, we just return the invite code
-    // In production, you would send an email with this code
+    if (!family) throw new Error("Obitelj nije učitana.");
     return family.inviteCode;
+  };
+
+  const regenerateInviteCode = async (): Promise<string> => {
+    if (!family?.id) throw new Error("Obitelj nije učitana.");
+    if (family.ownerId !== userId) {
+      throw new Error("Samo vlasnik može promijeniti pozivni kod.");
+    }
+
+    const newCode = generateInviteCode();
+    await updateDoc(doc(db, "families", family.id), { inviteCode: newCode });
+    return newCode;
   };
 
   return {
@@ -176,5 +199,6 @@ export const useFamily = (userId: string | null, familyId: string | null): UseFa
     createFamily,
     joinFamily,
     inviteMember,
+    regenerateInviteCode,
   };
 };
