@@ -11,7 +11,7 @@ import {
   GoogleAuthProvider,
 } from "firebase/auth";
 import { auth, db } from "../firebase";
-import { doc, setDoc, getDoc } from "firebase/firestore";
+import { doc, setDoc, getDoc, updateDoc } from "firebase/firestore";
 import type { User } from "../types/index";
 
 export interface UseAuthReturn {
@@ -44,7 +44,18 @@ export const useAuth = (): UseAuthReturn => {
         const userDocSnap = await getDoc(userDocRef);
 
         if (userDocSnap.exists()) {
-          const userData = userDocSnap.data() as User;
+          // Always use firebaseUser.uid as id — old app didn't store the id field
+          const rawData = userDocSnap.data();
+          const userData: User = {
+            ...(rawData as User),
+            id: firebaseUser.uid,
+            email: rawData.email || firebaseUser.email || "",
+            displayName: rawData.displayName || firebaseUser.displayName || "User",
+          };
+          // Migrate: write id back if it was missing in the old app's document
+          if (!rawData.id) {
+            updateDoc(userDocRef, { id: firebaseUser.uid }).catch(() => {});
+          }
           setUser(userData);
         } else {
           // Create a new user document if it doesn't exist
